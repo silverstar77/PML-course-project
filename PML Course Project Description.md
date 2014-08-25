@@ -1,6 +1,5 @@
 ---
 title: "PML Course Project - Predicting Biceps Curl Quality of Execution"
-
 author: "Nevena S Boyadzhiev"
 date: "Sunday, August 24, 2014"
 output: html_document
@@ -8,17 +7,19 @@ output: html_document
 
 #Background of the study
 
-Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement aiming to improve subjects' health, to find patterns in their behavior, or because they enjoy playing with technology. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).
 
-#Overview of the data
+##Overview of the data
 
-Before you start modelling, take a look at the data. Don't forget to set your working directory and to download the training and testing data sets in it.
+Before you start, set your working directory and download the training and testing data sets in it. Then, download and load the packages used in this analysis.
 
 
 ```r
 library(ggplot2)
 library(randomForest)
 library(caret)
+library(rpart)
+library(rpart.plot)
 train <- read.csv("pml-training.csv")
 str(train[,1:15])
 ```
@@ -75,35 +76,29 @@ prop.table(table(train$user_name, train$classe),1)
 ##   pedro    0.2452 0.1935 0.1912 0.1797 0.1904
 ```
 
-It looks like each subject does the execise correctly in about 24-34% of the time and repeats one of the 4 possible mistakes in about 13-20% of the time.
-
 ##Let's do some exploratory analysis
 
 ![plot of chunk unnamed-chunk-2](figure/unnamed-chunk-21.png) ![plot of chunk unnamed-chunk-2](figure/unnamed-chunk-22.png) ![plot of chunk unnamed-chunk-2](figure/unnamed-chunk-23.png) 
 
 It is obvious that:
-1. variable X is directly correlated with the outcome.
-2. it looks like the data was ordered by the outcome category and the observations were numbered using the X variable. 
-3. the categorical variable # of the window shows that the window frames were constructed based on the time series within which each participant performed the execises. 
-4. as each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to an non-controlled set. 
-5. the new window variable is strongly correlated with many of the measurement features on the IMU readings.
-
-Therefore, we can safely get rid of them, preserving only a time variable that we might need for cross validation.
+1. The data was ordered by the outcome category and the observations were numbered using the X variable.
+3. The variable num_window defines window frames based on the date and time when each participant performed the exercise. 
+4. As each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to a non-controlled set. 
+5. The new_window variable was used for calculating interval-based stats of many of the measurement features.
 
 
 ```r
-train$time <-as.POSIXct(train$raw_timestamp_part_1, origin="1970-01-01")
-train <- train[,-c(1,3,4,5,7)]
+train1 <- train[,-c(1,3,4,5,6,7)]
 ```
 
-###Exploratory analysis on features
+##Exploratory analysis on features
 
 Let's explore all feature related to the Euler angles, and namely the roll, the pitch and the yaw of the four IMUs.
 
 
 ```r
-yaw <- grep("yaw",names(train))
-summary(train[,yaw])
+yaw <- grep("yaw",names(train1))
+summary(train1[,yaw])
 ```
 
 ```
@@ -197,23 +192,21 @@ It looks like some features comprise only of zero or error values.Prepare to rem
 
 
 ```r
-roll <- grep("roll",names(train))
-summary(train[,roll])
-remove_var2<- c("kurtosis_roll_belt","skewness_roll_belt","skewness_roll_belt.1",
-                "kurtosis_roll_arm","skewness_roll_arm","kurtosis_roll_dumbbell",
-      "skewness_roll_dumbbell","kurtosis_roll_forearm","skewness_roll_forearm")
+roll <- grep("roll",names(train1))
+summary(train1[,roll])
+remove_var2<- c("kurtosis_roll_belt","skewness_roll_belt","skewness_roll_belt.1", "kurtosis_roll_arm", "skewness_roll_arm", "kurtosis_roll_dumbbell", "skewness_roll_dumbbell", "kurtosis_roll_forearm", "skewness_roll_forearm")
 
-pitch <- grep("pitch",names(train))
-summary(train[,pitch])
+pitch <- grep("pitch",names(train1))
+summary(train1[,pitch])
 
-accel <- grep("accel",names(train))
-summary(train[,accel])
+accel <- grep("accel",names(train1))
+summary(train1[,accel])
 
-gyro <- grep("gyro",names(train))
-summary(train[,gyro])
+gyro <- grep("gyro",names(train1))
+summary(train1[,gyro])
 
-magnet <- grep("magnet",names(train))
-summary(train[,magnet])
+magnet <- grep("magnet",names(train1))
+summary(train1[,magnet])
 ```
 
 Remove all non-informative features.
@@ -221,216 +214,325 @@ Remove all non-informative features.
 
 ```r
 remove_vars<- c(remove_var1, remove_var2)
-remove <- names(train) %in% remove_vars
-train <- train[!remove]
+remove <- names(train1) %in% remove_vars
+train2 <- train1[!remove]      ##136 variables left
 ```
 
 ###Investigate for near zero covariates related to each wearable sensor
 
-Let's split all features based on the part of the body/equipement where the IMU is mounted.
+Let's split all features based on the part of the body/equipment where the IMU is mounted.
 
 ```r
-belt_vars <- grep("belt",names(train))
-forearm_vars<-grep("forearm",names(train))
-arm_vars<- grep("_arm",names(train))
-dumbbell_vars <-grep("dumbbell",names(train))
+belt_vars <- grep("belt",names(train2))
+forearm_vars<-grep("forearm",names(train2))
+arm_vars<- grep("_arm",names(train2))
+dumbbell_vars <-grep("dumbbell",names(train2))
 ```
 
 - for the belt:
 
 
 ```r
-nearZeroVar(train[,belt_vars], saveMetric=T)
-```
-
-```
-##                      freqRatio percentUnique zeroVar   nzv
-## roll_belt                1.102       6.77811   FALSE FALSE
-## pitch_belt               1.036       9.37723   FALSE FALSE
-## yaw_belt                 1.058       9.97350   FALSE FALSE
-## total_accel_belt         1.063       0.14779   FALSE FALSE
-## kurtosis_picth_belt    600.500       1.61553   FALSE  TRUE
-## max_roll_belt            1.000       0.99378   FALSE FALSE
-## max_picth_belt           1.538       0.11212   FALSE FALSE
-## max_yaw_belt           640.533       0.34655   FALSE  TRUE
-## min_roll_belt            1.000       0.93772   FALSE FALSE
-## min_pitch_belt           2.192       0.08154   FALSE FALSE
-## min_yaw_belt           640.533       0.34655   FALSE  TRUE
-## amplitude_roll_belt      1.290       0.75426   FALSE FALSE
-## amplitude_pitch_belt     3.042       0.06625   FALSE FALSE
-## var_total_accel_belt     1.427       0.33126   FALSE FALSE
-## avg_roll_belt            1.067       0.97340   FALSE FALSE
-## stddev_roll_belt         1.039       0.35165   FALSE FALSE
-## var_roll_belt            1.615       0.48925   FALSE FALSE
-## avg_pitch_belt           1.375       1.09061   FALSE FALSE
-## stddev_pitch_belt        1.161       0.21914   FALSE FALSE
-## var_pitch_belt           1.308       0.32107   FALSE FALSE
-## avg_yaw_belt             1.200       1.22312   FALSE FALSE
-## stddev_yaw_belt          1.694       0.29559   FALSE FALSE
-## var_yaw_belt             1.500       0.73897   FALSE FALSE
-## gyros_belt_x             1.059       0.71348   FALSE FALSE
-## gyros_belt_y             1.144       0.35165   FALSE FALSE
-## gyros_belt_z             1.066       0.86128   FALSE FALSE
-## accel_belt_x             1.055       0.83580   FALSE FALSE
-## accel_belt_y             1.114       0.72877   FALSE FALSE
-## accel_belt_z             1.079       1.52380   FALSE FALSE
-## magnet_belt_x            1.090       1.66650   FALSE FALSE
-## magnet_belt_y            1.100       1.51870   FALSE FALSE
-## magnet_belt_z            1.006       2.32902   FALSE FALSE
-```
-
-```r
-nz <-nearZeroVar(train[,belt_vars], saveMetric=F)
-nzbelt <- names(train[,belt_vars][,nz])
+nearZeroVar(train2[,belt_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,belt_vars], saveMetric=F)
+nzbelt <- names(train2[,belt_vars][,nz])
 ```
 
 - for the glove:
 
 
 ```r
-nearZeroVar(train[,forearm_vars], saveMetric=T)
-```
-
-```
-##                         freqRatio percentUnique zeroVar   nzv
-## roll_forearm               11.589       11.0896   FALSE FALSE
-## pitch_forearm              65.983       14.8558   FALSE FALSE
-## yaw_forearm                15.323       10.1468   FALSE FALSE
-## kurtosis_picth_forearm    226.071        1.6461   FALSE  TRUE
-## skewness_pitch_forearm    226.071        1.6257   FALSE  TRUE
-## max_roll_forearm           27.667        1.3811   FALSE  TRUE
-## max_picth_forearm           2.964        0.7899   FALSE FALSE
-## max_yaw_forearm           228.762        0.2293   FALSE  TRUE
-## min_roll_forearm           27.667        1.3709   FALSE  TRUE
-## min_pitch_forearm           2.862        0.8715   FALSE FALSE
-## min_yaw_forearm           228.762        0.2293   FALSE  TRUE
-## amplitude_roll_forearm     20.750        1.4932   FALSE  TRUE
-## amplitude_pitch_forearm     3.269        0.9326   FALSE FALSE
-## total_accel_forearm         1.129        0.3567   FALSE FALSE
-## var_accel_forearm           3.500        2.0334   FALSE FALSE
-## avg_roll_forearm           27.667        1.6410   FALSE  TRUE
-## stddev_roll_forearm        87.000        1.6308   FALSE  TRUE
-## var_roll_forearm           87.000        1.6308   FALSE  TRUE
-## avg_pitch_forearm          83.000        1.6512   FALSE  TRUE
-## stddev_pitch_forearm       41.500        1.6461   FALSE  TRUE
-## var_pitch_forearm          83.000        1.6512   FALSE  TRUE
-## avg_yaw_forearm            83.000        1.6512   FALSE  TRUE
-## stddev_yaw_forearm         85.000        1.6410   FALSE  TRUE
-## var_yaw_forearm            85.000        1.6410   FALSE  TRUE
-## gyros_forearm_x             1.059        1.5187   FALSE FALSE
-## gyros_forearm_y             1.037        3.7764   FALSE FALSE
-## gyros_forearm_z             1.123        1.5646   FALSE FALSE
-## accel_forearm_x             1.126        4.0465   FALSE FALSE
-## accel_forearm_y             1.059        5.1116   FALSE FALSE
-## accel_forearm_z             1.006        2.9559   FALSE FALSE
-## magnet_forearm_x            1.012        7.7668   FALSE FALSE
-## magnet_forearm_y            1.247        9.5403   FALSE FALSE
-## magnet_forearm_z            1.000        8.5771   FALSE FALSE
-```
-
-```r
-nz <-nearZeroVar(train[,forearm_vars], saveMetric=F)
-nzforearm <-names(train[,forearm_vars][,nz])
+nearZeroVar(train2[,forearm_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,forearm_vars], saveMetric=F)
+nzforearm <-names(train2[,forearm_vars][,nz])
 ```
 
  - for the arm-band:
  
 
 ```r
-nearZeroVar(train[,arm_vars], saveMetric=T)
-```
-
-```
-##                     freqRatio percentUnique zeroVar   nzv
-## roll_arm               52.338       13.5256   FALSE FALSE
-## pitch_arm              87.256       15.7323   FALSE FALSE
-## yaw_arm                33.029       14.6570   FALSE FALSE
-## total_accel_arm         1.025        0.3364   FALSE FALSE
-## var_accel_arm           5.500        2.0130   FALSE FALSE
-## avg_roll_arm           77.000        1.6818   FALSE  TRUE
-## stddev_roll_arm        77.000        1.6818   FALSE  TRUE
-## var_roll_arm           77.000        1.6818   FALSE  TRUE
-## avg_pitch_arm          77.000        1.6818   FALSE  TRUE
-## stddev_pitch_arm       77.000        1.6818   FALSE  TRUE
-## var_pitch_arm          77.000        1.6818   FALSE  TRUE
-## avg_yaw_arm            77.000        1.6818   FALSE  TRUE
-## stddev_yaw_arm         80.000        1.6665   FALSE  TRUE
-## var_yaw_arm            80.000        1.6665   FALSE  TRUE
-## gyros_arm_x             1.016        3.2769   FALSE FALSE
-## gyros_arm_y             1.454        1.9162   FALSE FALSE
-## gyros_arm_z             1.111        1.2639   FALSE FALSE
-## accel_arm_x             1.017        3.9598   FALSE FALSE
-## accel_arm_y             1.140        2.7367   FALSE FALSE
-## accel_arm_z             1.128        4.0363   FALSE FALSE
-## magnet_arm_x            1.000        6.8240   FALSE FALSE
-## magnet_arm_y            1.057        4.4440   FALSE FALSE
-## magnet_arm_z            1.036        6.4468   FALSE FALSE
-## kurtosis_picth_arm    240.200        1.6716   FALSE  TRUE
-## kurtosis_yaw_arm     1746.909        2.0130   FALSE  TRUE
-## skewness_pitch_arm    240.200        1.6716   FALSE  TRUE
-## skewness_yaw_arm     1746.909        2.0130   FALSE  TRUE
-## max_roll_arm           25.667        1.4779   FALSE  TRUE
-## max_picth_arm          12.833        1.3403   FALSE FALSE
-## max_yaw_arm             1.227        0.2599   FALSE FALSE
-## min_roll_arm           19.250        1.4168   FALSE  TRUE
-## min_pitch_arm          19.250        1.4779   FALSE  TRUE
-## min_yaw_arm             1.000        0.1937   FALSE FALSE
-## amplitude_roll_arm     25.667        1.5595   FALSE  TRUE
-## amplitude_pitch_arm    20.000        1.4983   FALSE  TRUE
-## amplitude_yaw_arm       1.037        0.2599   FALSE FALSE
-```
-
-```r
-nz <-nearZeroVar(train[,arm_vars], saveMetric=F)
-nzarm <-names(train[,arm_vars][,nz])
+nearZeroVar(train2[,arm_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,arm_vars], saveMetric=F)
+nzarm <-names(train2[,arm_vars][,nz])
 ```
 
 - for the dumbbell:
 
 
 ```r
-nearZeroVar(train[,dumbbell_vars], saveMetric=T)
+nearZeroVar(train2[,dumbbell_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,dumbbell_vars], saveMetric=F)
+nzdumbbell <-names(train2[,dumbbell_vars][,nz])
+```
+
+- remove all near-zero features:
+
+
+```r
+remove_vars<- c(nzbelt, nzforearm, nzarm, nzdumbbell)
+remove <- names(train2) %in% remove_vars
+train3 <- train2[!remove]    ##95 variables left
+```
+
+###Remove covariates with too strong correlation 
+
+As the body moves, the IMUs measure both the extent and the acceleration of each movement using Euler angles, the angular momentum (by the gyroscope) and the accelerator. This creates high correlation among many of the variables. This will bias the coefficients, so I use a two step process to remove some of the most highly correlated covariates.
+
+
+```r
+M <- abs(cor(train3[,c(2:94)]))
+diag(M)<- 0
+which(M>0.95, arr.ind=T)
 ```
 
 ```
-##                          freqRatio percentUnique zeroVar   nzv
-## roll_dumbbell                1.022       83.7835   FALSE FALSE
-## pitch_dumbbell               2.277       81.2252   FALSE FALSE
-## yaw_dumbbell                 1.132       83.1414   FALSE FALSE
-## kurtosis_picth_dumbbell   9608.000        2.0436   FALSE  TRUE
-## skewness_pitch_dumbbell   9608.000        2.0487   FALSE  TRUE
-## max_roll_dumbbell            1.000        1.7226   FALSE FALSE
-## max_picth_dumbbell           1.333        1.7277   FALSE FALSE
-## max_yaw_dumbbell           960.800        0.3720   FALSE  TRUE
-## min_roll_dumbbell            1.000        1.6920   FALSE FALSE
-## min_pitch_dumbbell           1.667        1.8143   FALSE FALSE
-## min_yaw_dumbbell           960.800        0.3720   FALSE  TRUE
-## amplitude_roll_dumbbell      8.000        1.9723   FALSE FALSE
-## amplitude_pitch_dumbbell     8.000        1.9519   FALSE FALSE
-## total_accel_dumbbell         1.073        0.2191   FALSE FALSE
-## var_accel_dumbbell           6.000        1.9570   FALSE FALSE
-## avg_roll_dumbbell            1.000        2.0232   FALSE FALSE
-## stddev_roll_dumbbell        16.000        1.9927   FALSE FALSE
-## var_roll_dumbbell           16.000        1.9927   FALSE FALSE
-## avg_pitch_dumbbell           1.000        2.0232   FALSE FALSE
-## stddev_pitch_dumbbell       16.000        1.9927   FALSE FALSE
-## var_pitch_dumbbell          16.000        1.9927   FALSE FALSE
-## avg_yaw_dumbbell             1.000        2.0232   FALSE FALSE
-## stddev_yaw_dumbbell         16.000        1.9927   FALSE FALSE
-## var_yaw_dumbbell            16.000        1.9927   FALSE FALSE
-## gyros_dumbbell_x             1.003        1.2282   FALSE FALSE
-## gyros_dumbbell_y             1.265        1.4168   FALSE FALSE
-## gyros_dumbbell_z             1.060        1.0498   FALSE FALSE
-## accel_dumbbell_x             1.018        2.1659   FALSE FALSE
-## accel_dumbbell_y             1.053        2.3749   FALSE FALSE
-## accel_dumbbell_z             1.133        2.0895   FALSE FALSE
-## magnet_dumbbell_x            1.098        5.7486   FALSE FALSE
-## magnet_dumbbell_y            1.198        4.3013   FALSE FALSE
-## magnet_dumbbell_z            1.021        3.4451   FALSE FALSE
+##                  row col
+## total_accel_belt   4   1
+## accel_belt_z      26   1
+## accel_belt_x      24   2
+## roll_belt          1   4
+## accel_belt_z      26   4
+## pitch_belt         2  24
+## roll_belt          1  26
+## total_accel_belt   4  26
+## gyros_dumbbell_z  70  68
+## gyros_dumbbell_x  68  70
 ```
 
 ```r
-nz <-nearZeroVar(train[,dumbbell_vars], saveMetric=F)
-nzdumbbell <-names(train[,dumbbell_vars][,nz])
+remove_vars <- c("accel_belt_x","accel_belt_z", "total_accel_belt","gyros_dumbbell_z")
+remove <- names(train3) %in% remove_vars
+train4 <- train3[!remove]     ##91 variables left
+
+M <- abs(cor(train4[,c(2:90)]))
+diag(M)<- 0
+which(M>0.90, arr.ind=T)
 ```
 
+```
+##                  row col
+## accel_belt_y      23   1
+## roll_belt          1  23
+## gyros_arm_y       33  32
+## gyros_arm_x       32  33
+## gyros_forearm_z   83  65
+## gyros_dumbbell_x  65  83
+```
+
+```r
+remove_vars <- c("accel_belt_y","gyros_arm_y", "gyros_dumbbell_x")
+remove <- names(train4) %in% remove_vars
+train5 <- train4[!remove]    ##88 variables left
+```
+
+The strategy for which variables to remove is to minimize the number of variables removed while breaking all highly correlated pairs. I did this twice using thresholds of correlation 0.95 and 0.9. 
+
+##Let's build the model
+
+###Feature Selection
+
+87 covariates are still too many for a robust and interpretable model. Let's try to reduce them by using a classification tree algorithm.
+
+
+```r
+exploretree = rpart(classe ~ ., data=train5, method="class",minbucket=20)
+prp(exploretree, cex=0.8, main="Exloratory tree")
+```
+
+![plot of chunk unnamed-chunk-14](figure/unnamed-chunk-14.png) 
+
+```r
+summary(exploretree)  ##29 predictors
+```
+
+Check the summary of the model and select all predictors with importance more than 1 (18 out of 29).
+
+###Define cross-validation experiment
+
+
+```r
+fitControl = trainControl( method = "cv", number = 10 )
+cartGrid = expand.grid( .cp = (1:50)*0.01) 
+
+train(classe ~ user_name + 
+      roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+      pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+      magnet_arm_y + 
+      magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+      roll_dumbbell + accel_dumbbell_z, 
+      data = train5, method = "rpart", trControl = fitControl, 
+      tuneGrid = cartGrid)
+```
+
+I did 10-fold cross validation with resampling. The best performing parameter is cp=0.01 with an accuracy of 0.73.
+
+###Try a CART Model
+
+The user_name variable seemed important in the exploratory CART model. Although user-specific characteristics could probably be important for the way the exercise is performed, this variable wouldn't be useful on other samples as there are only 6 subjects. Let's run the model once again without it.
+
+
+```r
+set.seed(122)
+exploretree1 = rpart( classe ~ 
+      roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+      pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+      magnet_arm_y + 
+      magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+      roll_dumbbell + accel_dumbbell_z,
+      data = train, method="class", control=rpart.control(cp = 0.01))
+```
+
+Calculate the CART model accuracy (for the lack of test data, I am using the train data again).
+
+
+```r
+PredictTree = predict(exploretree1, newdata = train, type = "class")
+table(train$classe, PredictTree)
+```
+
+```
+##    PredictTree
+##        A    B    C    D    E
+##   A 5009  178  114  183   96
+##   B  708 2414  244  246  185
+##   C  262  310 2567  193   90
+##   D  227  277  440 2045  227
+##   E  154  314  348  185 2606
+```
+
+
+The weighted accuracy for the five outcome classes is 0.7462, which is a little better than the previous model. The out-of-sample error will obviously be larger.
+
+### Build random forest model
+
+
+```r
+set.seed(133)
+exploreforest = randomForest(classe ~ 
+       roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+       pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+       magnet_arm_y + 
+       magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+       roll_dumbbell + accel_dumbbell_z,
+       data = train, ntree=10, nodesize=25)
+
+exploreforest$confusion
+```
+
+```
+##      A    B    C    D    E class.error
+## A 5415   57   20   23   10     0.01991
+## B  142 3460   92   33   29     0.07881
+## C   40  143 3122   60   22     0.07824
+## D   30   57  103 2961   28     0.06858
+## E   18   77   41   61 3366     0.05529
+```
+
+```r
+wa2<-(5415+3460+3122+2961+3366)/19622
+```
+
+The random forest model did better - 0.9338 for the weighted accuracy. Let's make predictions again on the training set.
+
+
+```r
+set.seed(123)
+PredictForest = predict(exploreforest, newdata=train)
+table(train$classe, PredictForest)
+```
+
+```
+##    PredictForest
+##        A    B    C    D    E
+##   A 5551   22    5    1    1
+##   B   33 3734   25    5    0
+##   C    2   35 3359   23    3
+##   D    2    4   40 3165    5
+##   E    1    8    8   19 3571
+```
+
+And the in-sample accuracy estimates:
+
+
+```r
+(5551+3734+3359+3165+3571)/19622  ##Weighted Accuracy
+```
+
+```
+## [1] 0.9877
+```
+
+```r
+5551/(5551+22+5+1+1)              ## Class A
+```
+
+```
+## [1] 0.9948
+```
+
+```r
+3734/(3734+33+25+5+0)             ## Class B
+```
+
+```
+## [1] 0.9834
+```
+
+```r
+3359/(3359+2+35+23+3)             ## Class C
+```
+
+```
+## [1] 0.9816
+```
+
+```r
+3365/(3365+2+4+40+5)              ## Class D
+```
+
+```
+## [1] 0.9851
+```
+
+```r
+3571/(3571+1+8+8+19)              ## Class E
+```
+
+```
+## [1] 0.99
+```
+
+Again, the accuracy on a different set is expected to be lower. In fact, the accuracy on the test set of this model is 0.95.
+
+
+```r
+test<-read.csv("pml-testing.csv")
+PredictForest1 = predict(exploreforest, newdata=test)
+table(PredictForest1)
+```
+
+```
+## PredictForest1
+## A B C D E 
+## 7 9 0 1 3
+```
+
+```r
+PredictForest1
+```
+
+```
+##  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 
+##  B  A  B  A  A  E  D  B  A  A  B  B  B  A  E  E  A  B  B  B 
+## Levels: A B C D E
+```
+
+```r
+19/20
+```
+
+```
+## [1] 0.95
+```
+
+In the end, it is worth noting that when I added the user_name variable to the random forest model I was able to predict correctly all 20 test cases. 

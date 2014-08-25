@@ -1,6 +1,5 @@
 ---
 title: "PML Course Project - Predicting Biceps Curl Quality of Execution"
-
 author: "Nevena S Boyadzhiev"
 date: "Sunday, August 24, 2014"
 output: html_document
@@ -8,24 +7,24 @@ output: html_document
 
 #Background of the study
 
-Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement aiming to improve subjects' health, to find patterns in their behavior, or because they enjoy playing with technology. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).
 
-#Overview of the data
+##Overview of the data
 
-Before you start modelling, take a look at the data. Don't forget to set your working directory and to download the training and testing data sets in it.
+Before you start, set your working directory and download the training and testing data sets in it. Then, download and load the packages used in this analysis.
 
 ```{r}
 library(ggplot2)
 library(randomForest)
 library(caret)
+library(rpart)
+library(rpart.plot)
 train <- read.csv("pml-training.csv")
 str(train[,1:15])
 summary(train$user_name)
 summary(train$classe)
 prop.table(table(train$user_name, train$classe),1)
 ```
-
-It looks like each subject does the execise correctly in about 24-34% of the time and repeats one of the 4 possible mistakes in about 13-20% of the time.
 
 ##Let's do some exploratory analysis
 
@@ -37,56 +36,231 @@ featurePlot(x=train[,c("max_roll_belt", "min_roll_belt", "stddev_roll_belt","var
 ```
 
 It is obvious that:
-1.Variable X is directly correlated with the outcome. 
-2.It looks like the data was ordered by the outcome category and the observations were numbered using the X variable. 
-3.The categorical variable # of the window shows that the window frames were constructed based on the time series within which each participant performed the execises. 
-4.As each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to an non-controlled set. 
-5.The new window variable is strongly correlated with many of the measurement features on the IMU readings.
-
-Therefore, we can safely get rid of them, preserving only a time variable that we might need for cross validation.
+1. The data was ordered by the outcome category and the observations were numbered using the X variable.
+3. The variable num_window defines window frames based on the date and time when each participant performed the exercise. 
+4. As each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to a non-controlled set. 
+5. The new_window variable was used for calculating interval-based stats of many of the measurement features.
 
 ```{r}
-train$time <-as.POSIXct(train$raw_timestamp_part_1, origin="1970-01-01")
-train <- train[,-c(1,3,4,5,7)]
+train1 <- train[,-c(1,3,4,5,6,7)]
 ```
 
-###Exploratory analysis on features
+##Exploratory analysis on features
 
 Let's explore all feature related to the Euler angles, and namely the roll, the pitch and the yaw of the four IMUs.
 
 ```{r}
-yaw <- grep("yaw",names(train))
-summary(train[,yaw])
+yaw <- grep("yaw",names(train1))
+summary(train1[,yaw])
 remove_var1 <- c("kurtosis_yaw_belt","skewness_yaw_belt","amplitude_yaw_belt","kurtosis_yaw_dumbbell","skewness_yaw_dumbbell","amplitude_yaw_dumbbell","kurtosis_yaw_forearm","skewness_yaw_forearm","amplitude_yaw_forearm")
 ```
 
 It looks like some features comprise only of zero or error values.Prepare to remove them. Do the same processing with the roll, pitch, accel, gyro and magnet features.
 
-```{r}
-roll <- grep("roll",names(train))
-summary(train[,roll])
-remove_var2<- c("kurtosis_roll_belt","skewness_roll_belt","skewness_roll_belt.1",
-                "kurtosis_roll_arm","skewness_roll_arm","kurtosis_roll_dumbbell",
-      "skewness_roll_dumbbell","kurtosis_roll_forearm","skewness_roll_forearm")
+```{r, results='hide'}
+roll <- grep("roll",names(train1))
+summary(train1[,roll])
+remove_var2<- c("kurtosis_roll_belt","skewness_roll_belt","skewness_roll_belt.1", "kurtosis_roll_arm", "skewness_roll_arm", "kurtosis_roll_dumbbell", "skewness_roll_dumbbell", "kurtosis_roll_forearm", "skewness_roll_forearm")
 
-pitch <- grep("pitch",names(train))
-summary(train[,pitch])
+pitch <- grep("pitch",names(train1))
+summary(train1[,pitch])
 
-accel <- grep("accel",names(train))
-summary(train[,accel])
+accel <- grep("accel",names(train1))
+summary(train1[,accel])
 
-gyro <- grep("gyro",names(train))
-summary(train[,gyro])
+gyro <- grep("gyro",names(train1))
+summary(train1[,gyro])
 
-magnet <- grep("magnet",names(train))
-summary(train[,magnet])
+magnet <- grep("magnet",names(train1))
+summary(train1[,magnet])
 ```
 
 Remove all non-informative features.
 
 ```{r}
 remove_vars<- c(remove_var1, remove_var2)
-remove <- names(train) %in% remove_vars
-train <- train[!remove]
+remove <- names(train1) %in% remove_vars
+train2 <- train1[!remove]      ##136 variables left
 ```
 
+###Investigate for near zero covariates related to each wearable sensor
+
+Let's split all features based on the part of the body/equipment where the IMU is mounted.
+```{r}
+belt_vars <- grep("belt",names(train2))
+forearm_vars<-grep("forearm",names(train2))
+arm_vars<- grep("_arm",names(train2))
+dumbbell_vars <-grep("dumbbell",names(train2))
+```
+
+- for the belt:
+
+```{r,results='hide'}
+nearZeroVar(train2[,belt_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,belt_vars], saveMetric=F)
+nzbelt <- names(train2[,belt_vars][,nz])
+```
+
+- for the glove:
+
+```{r,results='hide'}
+nearZeroVar(train2[,forearm_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,forearm_vars], saveMetric=F)
+nzforearm <-names(train2[,forearm_vars][,nz])
+```
+
+ - for the arm-band:
+ 
+```{r,results='hide'}
+nearZeroVar(train2[,arm_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,arm_vars], saveMetric=F)
+nzarm <-names(train2[,arm_vars][,nz])
+```
+
+- for the dumbbell:
+
+```{r,results='hide'}
+nearZeroVar(train2[,dumbbell_vars], saveMetric=T)
+nz <-nearZeroVar(train2[,dumbbell_vars], saveMetric=F)
+nzdumbbell <-names(train2[,dumbbell_vars][,nz])
+```
+
+- remove all near-zero features:
+
+```{r,results='hide'}
+remove_vars<- c(nzbelt, nzforearm, nzarm, nzdumbbell)
+remove <- names(train2) %in% remove_vars
+train3 <- train2[!remove]    ##95 variables left
+```
+
+###Remove covariates with too strong correlation 
+
+As the body moves, the IMUs measure both the extent and the acceleration of each movement using Euler angles, the angular momentum (by the gyroscope) and the accelerator. This creates high correlation among many of the variables. This will bias the coefficients, so I use a two step process to remove some of the most highly correlated covariates.
+
+```{r}
+M <- abs(cor(train3[,c(2:94)]))
+diag(M)<- 0
+which(M>0.95, arr.ind=T)
+
+remove_vars <- c("accel_belt_x","accel_belt_z", "total_accel_belt","gyros_dumbbell_z")
+remove <- names(train3) %in% remove_vars
+train4 <- train3[!remove]     ##91 variables left
+
+M <- abs(cor(train4[,c(2:90)]))
+diag(M)<- 0
+which(M>0.90, arr.ind=T)
+
+remove_vars <- c("accel_belt_y","gyros_arm_y", "gyros_dumbbell_x")
+remove <- names(train4) %in% remove_vars
+train5 <- train4[!remove]    ##88 variables left
+```
+
+The strategy for which variables to remove is to minimize the number of variables removed while breaking all highly correlated pairs. I did this twice using thresholds of correlation 0.95 and 0.9. 
+
+##Let's build the model
+
+###Feature Selection
+
+87 covariates are still too many for a robust and interpretable model. Let's try to reduce them by using a classification tree algorithm.
+
+```{r,results='hide'}
+exploretree = rpart(classe ~ ., data=train5, method="class",minbucket=20)
+prp(exploretree, cex=0.8, main="Exloratory tree")
+summary(exploretree)  ##29 predictors
+```
+
+Check the summary of the model and select all predictors with importance more than 1 (18 out of 29).
+
+###Define cross-validation experiment
+
+```{r,results='hide'}
+fitControl = trainControl( method = "cv", number = 10 )
+cartGrid = expand.grid( .cp = (1:50)*0.01) 
+
+train(classe ~ user_name + 
+      roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+      pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+      magnet_arm_y + 
+      magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+      roll_dumbbell + accel_dumbbell_z, 
+      data = train5, method = "rpart", trControl = fitControl, 
+      tuneGrid = cartGrid)
+
+```
+
+I did 10-fold cross validation with resampling. The best performing parameter is cp=0.01 with an accuracy of 0.73.
+
+###Try a CART Model
+
+The user_name variable seemed important in the exploratory CART model. Although user-specific characteristics could probably be important for the way the exercise is performed, this variable wouldn't be useful on other samples as there are only 6 subjects. Let's run the model once again without it.
+
+```{r}
+set.seed(122)
+exploretree1 = rpart( classe ~ 
+      roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+      pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+      magnet_arm_y + 
+      magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+      roll_dumbbell + accel_dumbbell_z,
+      data = train, method="class", control=rpart.control(cp = 0.01))
+
+```
+
+Calculate the CART model accuracy (for the lack of test data, I am using the train data again).
+
+```{r}
+PredictTree = predict(exploretree1, newdata = train, type = "class")
+table(train$classe, PredictTree)
+```
+```{r, echo=FALSE}
+wa1<- (5009+2414+2567+2045+2606)/19622
+```
+
+The weighted accuracy for the five outcome classes is `r wa1`, which is a little better than the previous model. The out-of-sample error will obviously be larger.
+
+### Build random forest model
+
+```{r}
+set.seed(133)
+exploreforest = randomForest(classe ~ 
+       roll_belt + pitch_belt + yaw_belt + magnet_belt_x + magnet_belt_y +
+       pitch_forearm + accel_forearm_x + roll_forearm + yaw_forearm + magnet_forearm_y + 
+       magnet_arm_y + 
+       magnet_dumbbell_y + accel_dumbbell_y + total_accel_dumbbell + magnet_dumbbell_z + 
+       roll_dumbbell + accel_dumbbell_z,
+       data = train, ntree=10, nodesize=25)
+
+exploreforest$confusion
+wa2<-(5415+3460+3122+2961+3366)/19622
+```
+
+The random forest model did better - `r wa2` for the weighted accuracy. Let's make predictions again on the training set.
+
+```{r}
+set.seed(123)
+PredictForest = predict(exploreforest, newdata=train)
+table(train$classe, PredictForest)
+```
+
+And the in-sample accuracy estimates:
+
+```{r}
+(5551+3734+3359+3165+3571)/19622  ##Weighted Accuracy
+5551/(5551+22+5+1+1)              ## Class A
+3734/(3734+33+25+5+0)             ## Class B
+3359/(3359+2+35+23+3)             ## Class C
+3365/(3365+2+4+40+5)              ## Class D
+3571/(3571+1+8+8+19)              ## Class E
+```
+
+Again, the accuracy on a different set is expected to be lower. In fact, the accuracy on the test set of this model is 0.95.
+
+```{r}
+test<-read.csv("pml-testing.csv")
+PredictForest1 = predict(exploreforest, newdata=test)
+table(PredictForest1)
+PredictForest1
+19/20
+```
+
+In the end, it is worth noting that when I added the user_name variable to the random forest model I was able to predict correctly all 20 test cases. 
