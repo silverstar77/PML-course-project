@@ -31,10 +31,95 @@
     <!-- MAIN CONTENT -->
     <div id="main_content_wrap" class="outer">
       <section id="main_content" class="inner">
-        <h1>
-<a name="pml-course-project" class="anchor" href="#pml-course-project"><span class="octicon octicon-link"></span></a>PML-course-project</h1>
+        <hr><p>title: "PML Course Project - Predicting Biceps Curl Quality of Execution"</p>
 
-<p>Course Project for the Practical Machine Learning Course</p>
+<p>author: "Nevena S Boyadzhiev"
+date: "Sunday, August 24, 2014"</p>
+
+<h2>
+<a name="output-html_document" class="anchor" href="#output-html_document"><span class="octicon octicon-link"></span></a>output: html_document</h2>
+
+<h1>
+<a name="background-of-the-study" class="anchor" href="#background-of-the-study"><span class="octicon octicon-link"></span></a>Background of the study</h1>
+
+<p>Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement aiming to improve subjects' health, to find patterns in their behavior, or because they enjoy playing with technology. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).</p>
+
+<h1>
+<a name="overview-of-the-data" class="anchor" href="#overview-of-the-data"><span class="octicon octicon-link"></span></a>Overview of the data</h1>
+
+<p>Before you start modelling, take a look at the data. Don't forget to set your working directory and to download the training and testing data sets in it.</p>
+
+<div class="highlight highlight-r"><pre><span class="kn">library</span><span class="p">(</span>ggplot2<span class="p">)</span>
+<span class="kn">library</span><span class="p">(</span>randomForest<span class="p">)</span>
+<span class="kn">library</span><span class="p">(</span>caret<span class="p">)</span>
+train <span class="o">&lt;-</span> read.csv<span class="p">(</span><span class="s">"pml-training.csv"</span><span class="p">)</span>
+str<span class="p">(</span>train<span class="p">[,</span><span class="m">1</span><span class="o">:</span><span class="m">15</span><span class="p">])</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="o">$</span>user_name<span class="p">)</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="o">$</span>classe<span class="p">)</span>
+<span class="kp">prop.table</span><span class="p">(</span><span class="kp">table</span><span class="p">(</span>train<span class="o">$</span>user_name<span class="p">,</span> train<span class="o">$</span>classe<span class="p">),</span><span class="m">1</span><span class="p">)</span>
+</pre></div>
+
+<p>It looks like each subject does the execise correctly in about 24-34% of the time and repeats one of the 4 possible mistakes in about 13-20% of the time.</p>
+
+<h2>
+<a name="lets-do-some-exploratory-analysis" class="anchor" href="#lets-do-some-exploratory-analysis"><span class="octicon octicon-link"></span></a>Let's do some exploratory analysis</h2>
+
+<pre lang="r,"><code>qplot(X, classe, data=train, color=classe, ylab="Outcome categories", xlab="X variable", main="Explore the relationship of X variable and the outcome")
+qplot(num_window, classe, data=train, color=classe, xlab="Numbered Window variable", ylab="Outcome categories",main="The numbered window variable and the outcome")
+featurePlot(x=train[,c("max_roll_belt", "min_roll_belt", "stddev_roll_belt","var_roll_belt","avg_pitch_belt",  "stddev_pitch_belt")], y=train$new_window, labels=c("New window variable", "Measurement features"))
+
+</code></pre>
+
+<p>It is obvious that:
+1.Variable X is directly correlated with the outcome. 
+2.It looks like the data was ordered by the outcome category and the observations were numbered using the X variable. 
+3.The categorical variable # of the window shows that the window frames were constructed based on the time series within which each participant performed the execises. 
+4.As each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to an non-controlled set. 
+5.The new window variable is strongly correlated with many of the measurement features on the IMU readings.</p>
+
+<p>Therefore, we can safely get rid of them, preserving only a time variable that we might need for cross validation.</p>
+
+<div class="highlight highlight-r"><pre>train<span class="o">$</span>time <span class="o">&lt;-</span><span class="kp">as.POSIXct</span><span class="p">(</span>train<span class="o">$</span>raw_timestamp_part_1<span class="p">,</span> origin<span class="o">=</span><span class="s">"1970-01-01"</span><span class="p">)</span>
+train <span class="o">&lt;-</span> train<span class="p">[,</span><span class="o">-</span><span class="kt">c</span><span class="p">(</span><span class="m">1</span><span class="p">,</span><span class="m">3</span><span class="p">,</span><span class="m">4</span><span class="p">,</span><span class="m">5</span><span class="p">,</span><span class="m">7</span><span class="p">)]</span>
+</pre></div>
+
+<h3>
+<a name="exploratory-analysis-on-features" class="anchor" href="#exploratory-analysis-on-features"><span class="octicon octicon-link"></span></a>Exploratory analysis on features</h3>
+
+<p>Let's explore all feature related to the Euler angles, and namely the roll, the pitch and the yaw of the four IMUs.</p>
+
+<div class="highlight highlight-r"><pre>yaw <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"yaw"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>yaw<span class="p">])</span>
+remove_var1 <span class="o">&lt;-</span> <span class="kt">c</span><span class="p">(</span><span class="s">"kurtosis_yaw_belt"</span><span class="p">,</span><span class="s">"skewness_yaw_belt"</span><span class="p">,</span><span class="s">"amplitude_yaw_belt"</span><span class="p">,</span><span class="s">"kurtosis_yaw_dumbbell"</span><span class="p">,</span><span class="s">"skewness_yaw_dumbbell"</span><span class="p">,</span><span class="s">"amplitude_yaw_dumbbell"</span><span class="p">,</span><span class="s">"kurtosis_yaw_forearm"</span><span class="p">,</span><span class="s">"skewness_yaw_forearm"</span><span class="p">,</span><span class="s">"amplitude_yaw_forearm"</span><span class="p">)</span>
+</pre></div>
+
+<p>It looks like some features comprise only of zero or error values.Prepare to remove them. Do the same processing with the roll, pitch, accel, gyro and magnet features.</p>
+
+<div class="highlight highlight-r"><pre>roll <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"roll"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>roll<span class="p">])</span>
+remove_var2<span class="o">&lt;-</span> <span class="kt">c</span><span class="p">(</span><span class="s">"kurtosis_roll_belt"</span><span class="p">,</span><span class="s">"skewness_roll_belt"</span><span class="p">,</span><span class="s">"skewness_roll_belt.1"</span><span class="p">,</span>
+                <span class="s">"kurtosis_roll_arm"</span><span class="p">,</span><span class="s">"skewness_roll_arm"</span><span class="p">,</span><span class="s">"kurtosis_roll_dumbbell"</span><span class="p">,</span>
+      <span class="s">"skewness_roll_dumbbell"</span><span class="p">,</span><span class="s">"kurtosis_roll_forearm"</span><span class="p">,</span><span class="s">"skewness_roll_forearm"</span><span class="p">)</span>
+
+pitch <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"pitch"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>pitch<span class="p">])</span>
+
+accel <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"accel"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>accel<span class="p">])</span>
+
+gyro <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"gyro"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>gyro<span class="p">])</span>
+
+magnet <span class="o">&lt;-</span> <span class="kp">grep</span><span class="p">(</span><span class="s">"magnet"</span><span class="p">,</span><span class="kp">names</span><span class="p">(</span>train<span class="p">))</span>
+<span class="kp">summary</span><span class="p">(</span>train<span class="p">[,</span>magnet<span class="p">])</span>
+</pre></div>
+
+<p>Remove all non-informative features.</p>
+
+<div class="highlight highlight-r"><pre>remove_vars<span class="o">&lt;-</span> <span class="kt">c</span><span class="p">(</span>remove_var1<span class="p">,</span> remove_var2<span class="p">)</span>
+remove <span class="o">&lt;-</span> <span class="kp">names</span><span class="p">(</span>train<span class="p">)</span> <span class="o">%in%</span> remove_vars
+train <span class="o">&lt;-</span> train<span class="p">[</span><span class="o">!</span><span class="kp">remove</span><span class="p">]</span>
+</pre></div>
       </section>
     </div>
 
