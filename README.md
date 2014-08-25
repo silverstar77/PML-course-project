@@ -1,4 +1,4 @@
-Practical Machine Learning, John Hopkins University, Data Science Specialization, Coursera
+Practical Machine Learning, Johns Hopkins University, Data Science Specialization, Coursera
 ==================
 
 This repo contains the files of the course project for the Practical Machine Learning Course. 
