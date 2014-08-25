@@ -1,22 +1,92 @@
 ---
-title: "PML Course Project - Predicting Biceps Curl Quality"
+title: "PML Course Project - Predicting Biceps Curl Quality of Execution"
+
 author: "Nevena S Boyadzhiev"
 date: "Sunday, August 24, 2014"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+#Background of the study
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit makes it possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement aiming to improve subjects' health, to find patterns in their behavior, or because they enjoy playing with technology. One thing that people regularly measure is how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from Razor inertial measurement units (IMU) mounted on the belts, gloves, arm-bands, and dumbells of 6 participants. They were asked to perform Unilateral Dumbbell Biceps Curls in 5 different fashions: correctly (according to specifications) and incorrectly (in 4 different ways).
+
+#Overview of the data
+
+Before you start modelling, take a look at the data. Don't forget to set your working directory and to download the training and testing data sets in it.
 
 ```{r}
-summary(cars)
+library(ggplot2)
+library(randomForest)
+library(caret)
+train <- read.csv("pml-training.csv")
+str(train[,1:15])
+summary(train$user_name)
+summary(train$classe)
+prop.table(table(train$user_name, train$classe),1)
 ```
 
-You can also embed plots, for example:
+It looks like each subject does the execise correctly in about 24-34% of the time and repeats one of the 4 possible mistakes in about 13-20% of the time.
+
+##Let's do some exploratory analysis
 
 ```{r, echo=FALSE}
-plot(cars)
+qplot(X, classe, data=train, color=classe, ylab="Outcome categories", xlab="X variable", main="Explore the relationship of X variable and the outcome")
+qplot(num_window, classe, data=train, color=classe, xlab="Numbered Window variable", ylab="Outcome categories",main="The numbered window variable and the outcome")
+featurePlot(x=train[,c("max_roll_belt", "min_roll_belt", "stddev_roll_belt","var_roll_belt","avg_pitch_belt",  "stddev_pitch_belt")], y=train$new_window, labels=c("New window variable", "Measurement features"))
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+It is obvious that:
+1.Variable X is directly correlated with the outcome. 
+2.It looks like the data was ordered by the outcome category and the observations were numbered using the X variable. 
+3.The categorical variable # of the window shows that the window frames were constructed based on the time series within which each participant performed the execises. 
+4.As each participant complied to the instructions of an experienced trainer, the two window variables cannot have a strong predictive value to an non-controlled set. 
+5.The new window variable is strongly correlated with many of the measurement features on the IMU readings.
+
+Therefore, we can safely get rid of them, preserving only a time variable that we might need for cross validation.
+
+```{r}
+train$time <-as.POSIXct(train$raw_timestamp_part_1, origin="1970-01-01")
+train <- train[,-c(1,3,4,5,7)]
+```
+
+###Exploratory analysis on features
+
+Let's explore all feature related to the Euler angles, and namely the roll, the pitch and the yaw of the four IMUs.
+
+```{r}
+yaw <- grep("yaw",names(train))
+summary(train[,yaw])
+remove_var1 <- c("kurtosis_yaw_belt","skewness_yaw_belt","amplitude_yaw_belt","kurtosis_yaw_dumbbell","skewness_yaw_dumbbell","amplitude_yaw_dumbbell","kurtosis_yaw_forearm","skewness_yaw_forearm","amplitude_yaw_forearm")
+```
+
+It looks like some features comprise only of zero or error values.Prepare to remove them. Do the same processing with the roll, pitch, accel, gyro and magnet features.
+
+```{r}
+roll <- grep("roll",names(train))
+summary(train[,roll])
+remove_var2<- c("kurtosis_roll_belt","skewness_roll_belt","skewness_roll_belt.1",
+                "kurtosis_roll_arm","skewness_roll_arm","kurtosis_roll_dumbbell",
+      "skewness_roll_dumbbell","kurtosis_roll_forearm","skewness_roll_forearm")
+
+pitch <- grep("pitch",names(train))
+summary(train[,pitch])
+
+accel <- grep("accel",names(train))
+summary(train[,accel])
+
+gyro <- grep("gyro",names(train))
+summary(train[,gyro])
+
+magnet <- grep("magnet",names(train))
+summary(train[,magnet])
+```
+
+Remove all non-informative features.
+
+```{r}
+remove_vars<- c(remove_var1, remove_var2)
+remove <- names(train) %in% remove_vars
+train <- train[!remove]
+```
+
